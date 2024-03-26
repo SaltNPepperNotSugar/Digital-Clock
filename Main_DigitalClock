@@ -1,0 +1,300 @@
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+
+// Inisialisasi LCD pada alamat I2C 0x27 dan ukuran 16x2
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+
+// Deklarasi fungsi-fungsi
+void updateClock();
+void checkAlarm();
+void resetStopwatch();
+void displayElapsedTime(unsigned long hours, unsigned long minutes, unsigned long seconds, int milliseconds);
+
+// Pin LED dan Speaker
+const int pushButton1 = 11; // Hubungkan pushButton1 ke pin digital 11
+const int pushButton2 = 12; // Hubungkan pushButton2 ke pin digital 12
+const int pushButton3 = 13; // Hubungkan pushButton3 ke pin digital 13
+const int buzzerPin = 8; // Hubungkan buzzer ke pin digital 8
+
+// Variabel untuk menyimpan waktu
+volatile int seconds = 55;
+volatile int minutes = 59;
+volatile int hours = 22;
+
+// Variabel untuk alarm
+const int alarmHour = 23; // Jam untuk alarm
+const int alarmMinute = 0; // Menit untuk alarm
+const int alarmSecond = 1; // Detik untuk alarm
+const int alarmbip = (alarmSecond - 1);
+bool alarmEnabled = true; // Apakah alarm diaktifkan
+
+int digital_mode;
+bool buttonPressed = false;
+
+// Variabel untuk durasi bunyi alarm
+int alarmDuration = 0;
+bool isAlarmOn = false;
+
+// Variabel untuk stopwatch
+bool stopwatchStarted = false; // Menyimpan status apakah stopwatch sudah dimulai
+unsigned long startTime = 0; // Menyimpan waktu mulai stopwatch
+unsigned long elapsedTime = 0; // Menyimpan waktu yang telah berlalu
+
+void setup() {
+  lcd.init(); // Inisialisasi LCD
+  lcd.backlight(); // Nyalakan backlight LCD
+  pinMode(pushButton1, INPUT_PULLUP); // Set push button 1 sebagai input
+  pinMode(pushButton2, INPUT_PULLUP); // Set push button 2 sebagai input
+  pinMode(pushButton3, INPUT_PULLUP); // Set push button 3 sebagai input
+  pinMode(buzzerPin, OUTPUT); // Set pin buzzer sebagai output
+  digital_mode = 0; // Mengatur keadaan untuk mode awal clock
+
+  // Set up Timer1 for interrupt every second
+  cli(); // Disable interrupts
+  TCCR1A = 0; // Set entire TCCR1A register to 0
+  TCCR1B = 0; // Set entire TCCR1B register to 0
+  TCNT1 = 0; // Initialize counter value to 0
+  OCR1A = 15624; // Set compare match register for 1 Hz increments
+  TCCR1B |= (1 << WGM12); // Turn on CTC mode
+  TCCR1B |= (1 << CS12) | (1 << CS10); // Set CS12 and CS10 bits for 1024 prescaler
+  TIMSK1 |= (1 << OCIE1A); // Enable timer compare interrupt
+  sei(); // Enable interrupts
+}
+
+// Deklarasikan variabel boolean untuk menandai apakah timer sudah membersihkan layar
+bool timerScreenCleaned = false;
+bool isTimerTextDisplayed = false;
+
+bool clearScreen = true; // Deklarasi variabel clearScreen secara global
+bool resetRequested = false;
+
+//Timer 
+// Variabel untuk menyimpan waktu timer
+int timerHour = 0;
+int timerMinute = 5; // Contoh: timer diatur selama 5 menit
+int timerSecond = 0;
+
+int initialtimerH = 0;
+int initialtimerM = 5;
+int initialtimerS = 0;
+
+int khusustimer = 0;
+
+bool buzzerOn = false; // Menyimpan status apakah buzzer aktif
+
+// Deklarasi variabel boolean timerRunning di luar dari fungsi loop()
+bool timerRunning = false;
+
+void loop() {
+  int buttonState1 = digitalRead(pushButton1);
+  int buttonState2 = digitalRead(pushButton2);
+  int buttonState3 = digitalRead(pushButton3);
+
+  if (buttonState1 == LOW && !timerScreenCleaned) {
+    delay(300);
+    digital_mode++;
+    timerScreenCleaned = true;
+    lcd.clear();
+  }
+
+  if (buttonState1 == HIGH) {
+    timerScreenCleaned = false;
+  }
+
+  if (digital_mode == 4) {
+    digital_mode = 0;
+  }
+
+  lcd.setCursor(0, 0);
+
+  if (digital_mode == 0) {
+    lcd.print("Mode Jam   ");
+    updateClock();
+    checkAlarm();
+  } else if (digital_mode == 1) {
+    lcd.print("Mode Alarm");
+    checkAlarm();
+  } else if (digital_mode == 2) {
+    lcd.print("Stopwatch ");
+    lcd.setCursor(0, 1);
+    checkAlarm();
+    // Clear screen hanya dilakukan sekali saat tombol 3 ditekan pertama kali
+    if (clearScreen) {
+      lcd.print("00:00:00.000"); // Menampilkan waktu awal 00:00:00:000 di LCD
+      clearScreen = false;        // Set status clearScreen menjadi false
+    }
+
+    // Reset stopwatch ke 00:00:00:000 jika tombol 2 ditekan
+    if (buttonState2 == LOW) {
+      delay(50);                   // Tambahkan delay untuk debouncing
+      resetStopwatch();
+      delay(200);                  // Tambahkan delay setelah membaca tombol
+    }
+
+    // Memulai/pause stopwatch hanya jika tombol 3 ditekan
+    if (buttonState3 == LOW) {
+      delay(50);                   // Tambahkan delay untuk debouncing
+      // Toggle status stopwatch (mulai/pause)
+      stopwatchStarted = !stopwatchStarted;
+      if (stopwatchStarted) {
+        // Jika sedang di-pause, hitung ulang waktu awal
+        startTime = millis() - elapsedTime;
+      } else {
+        // Jika sedang berjalan, hitung waktu yang telah berlalu
+        elapsedTime = millis() - startTime;
+      }
+      delay(200);                  // Tambahkan delay setelah membaca tombol
+    }
+
+    // Hitung waktu yang telah berlalu jika stopwatch sudah dimulai
+    if (stopwatchStarted) {
+      elapsedTime = millis() - startTime;
+
+      // Tampilkan waktu yang telah berlalu di LCD
+      lcd.setCursor(0, 1);
+
+      // Menampilkan jam, menit, detik, dan milidetik
+      unsigned long hours = elapsedTime / 3600000;
+      unsigned long minutes = (elapsedTime % 3600000) / 60000;
+      unsigned long seconds = (elapsedTime % 60000) / 1000;
+      int milliseconds = elapsedTime % 1000;
+
+      // Menampilkan waktu stopwatch, termasuk saat dimulai
+      displayElapsedTime(hours, minutes, seconds, milliseconds);
+    }
+  } else if (digital_mode == 3) {
+    lcd.print("Timer     ");
+    if (buttonState2 == LOW && khusustimer == 0){
+      khusustimer = 1;
+    }
+    else if(buttonState2 == LOW && khusustimer == 1){
+      khusustimer = 0;
+    }
+    else if (buttonState3 == LOW){
+      timerHour = initialtimerH;
+      timerMinute = initialtimerM;
+      timerSecond = initialtimerS;
+      khusustimer = 0;
+    }
+    lcd.setCursor(0, 1);
+    // Menampilkan jam (dua digit)
+    if (timerHour < 10) lcd.print('0');
+    lcd.print(timerHour);
+    lcd.print(':');
+
+    // Selalu tampilkan menit, detik, dan milidetik (dua digit)
+    if (timerMinute < 10) lcd.print('0');
+    lcd.print(timerMinute);
+    lcd.print(':');
+    if (timerSecond < 10) lcd.print('0');
+    lcd.print(timerSecond);
+  }
+}
+
+// Fungsi untuk mereset stopwatch menjadi 00:00:00:000
+void resetStopwatch() {
+  stopwatchStarted = false; // Set stopwatch sebagai tidak dimulai
+  elapsedTime = 0; // Reset waktu yang telah berlalu
+  lcd.setCursor(0, 1);
+  lcd.print("00:00:00.000"); // Tampilkan waktu 00:00:00:000 di LCD
+}
+
+// Fungsi untuk menampilkan waktu yang telah berlalu pada LCD
+void displayElapsedTime(unsigned long hours, unsigned long minutes, unsigned long seconds, int milliseconds) {
+  // Menampilkan jam (dua digit)
+  if (hours < 10) lcd.print('0');
+  lcd.print(hours);
+  lcd.print(':');
+
+  // Selalu tampilkan menit, detik, dan milidetik (dua digit)
+  if (minutes < 10) lcd.print('0');
+  lcd.print(minutes);
+  lcd.print(':');
+  if (seconds < 10) lcd.print('0');
+  lcd.print(seconds);
+  lcd.print('.');
+  if (milliseconds < 10) lcd.print("00");
+  else if (milliseconds < 100) lcd.print("0");
+  lcd.print(milliseconds);
+}
+
+// Update LCD function
+void updateClock() {
+  lcd.setCursor(0, 1);
+  if (hours < 10) lcd.print('0');
+  lcd.print(hours);
+  lcd.print(':');
+  if (minutes < 10) lcd.print('0');
+  lcd.print(minutes);
+  lcd.print(':');
+  if (seconds < 10) lcd.print('0');
+  lcd.print(seconds);
+}
+
+// Check alarm function
+void checkAlarm() {
+  if (alarmEnabled && hours == alarmHour && minutes == alarmMinute && seconds == alarmbip) {
+    isAlarmOn = true;
+    alarmDuration = 4; // Set durasi bunyi alarm dalam detik
+  }
+}
+
+// Interrupt service routine for Timer1 Compare Match A
+ISR(TIMER1_COMPA_vect) {
+  seconds++;
+
+  if (seconds >= 60) {
+    seconds = 0;
+    minutes++;
+    if (minutes >= 60) {
+      minutes = 0;
+      hours++;
+      if (hours >= 24) {
+        hours = 0; // Reset jam ke 0 jika sudah 23
+      }
+    }
+  }
+
+  // Cek apakah bunyi alarm harus dimatikan
+  if (isAlarmOn) {
+    if (alarmDuration > 0) {
+      tone(buzzerPin, 1000); // Bunyi alarm
+      alarmDuration--;
+    } else {
+      noTone(buzzerPin); // Matikan bunyi alarm
+      isAlarmOn = false;
+    }
+  }
+  
+  if(khusustimer == 1){
+    if ((timerMinute != 0) && (timerSecond == 0)){
+      timerSecond = 60;
+      timerMinute--;
+    }
+    else if ((timerHour != 0) && (timerMinute == 0) && (timerSecond == 0)) {
+      timerSecond = 60;
+      timerMinute = 60;
+      timerHour--;
+    }
+    else if ((timerHour == 0) && (timerMinute == 0) && (timerSecond == 0)){
+      timerHour = 0;
+      timerMinute = 0;
+      timerSecond = 0;
+
+      tone(buzzerPin, 1000);
+      alarmDuration--;
+    }
+    timerSecond--;
+  }
+
+  // Cek apakah bunyi alarm harus dimatikan
+  if (isAlarmOn) {
+    if (alarmDuration > 0) {
+      tone(buzzerPin, 1000); // Bunyi alarm
+      alarmDuration--;
+    } else {
+      noTone(buzzerPin); // Matikan bunyi alarm
+      isAlarmOn = false;
+    }
+  }
+}
